@@ -308,21 +308,24 @@ def _fused_batch_norm(
                        (inputs.name, params_shape))
 
     # Allocate parameters for the beta and gamma of the normalization.
-    trainable_beta = trainable and center
     beta_collections = utils.get_variable_collections(variables_collections,
                                                       'beta')
     if not param_initializers:
       param_initializers = {}
+
+    # Float32 required to avoid precision-loss when using fp16 input/output
+    variable_dtype = dtypes.float32
+
     if center:
       beta_initializer = param_initializers.get('beta',
                                                 init_ops.zeros_initializer())
       beta = variables.model_variable(
           'beta',
           shape=params_shape,
-          dtype=dtype,
+          dtype=variable_dtype,
           initializer=beta_initializer,
           collections=beta_collections,
-          trainable=trainable_beta)
+          trainable=trainable)
     else:
       beta = array_ops.constant(0.0, shape=params_shape)
 
@@ -334,7 +337,7 @@ def _fused_batch_norm(
       gamma = variables.model_variable(
           'gamma',
           shape=params_shape,
-          dtype=dtype,
+          dtype=variable_dtype,
           initializer=gamma_initializer,
           collections=gamma_collections,
           trainable=trainable)
@@ -350,7 +353,7 @@ def _fused_batch_norm(
     moving_mean = variables.model_variable(
         'moving_mean',
         shape=params_shape,
-        dtype=dtype,
+        dtype=variable_dtype,
         initializer=moving_mean_initializer,
         trainable=False,
         collections=moving_mean_collections)
@@ -361,7 +364,7 @@ def _fused_batch_norm(
     moving_variance = variables.model_variable(
         'moving_variance',
         shape=params_shape,
-        dtype=dtype,
+        dtype=variable_dtype,
         initializer=moving_variance_initializer,
         trainable=False,
         collections=moving_variance_collections)

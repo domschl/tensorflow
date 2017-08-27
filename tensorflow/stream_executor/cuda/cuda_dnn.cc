@@ -232,6 +232,7 @@ CUDNN_DNN_ROUTINE_EACH_R3(PERFTOOLS_GPUTOOLS_CUDNN_WRAP)
   __macro(cudnnRNNBackwardData)                               \
   __macro(cudnnRNNBackwardWeights)                            \
   __macro(cudnnSetRNNDescriptor)                              \
+  __macro(cudnnSetRNNDescriptor_v6)                           \
   __macro(cudnnGetFilterNdDescriptor)
 
 // clang-format on
@@ -249,6 +250,17 @@ CUDNN_DNN_ROUTINE_EACH_R5(PERFTOOLS_GPUTOOLS_CUDNN_WRAP)
 // clang-format on
 CUDNN_DNN_ROUTINE_EACH_R6(PERFTOOLS_GPUTOOLS_CUDNN_WRAP)
 #undef CUDNN_DNN_ROUTINE_EACH_R6
+#endif
+
+// APIs in R7
+// clang-format off
+#if CUDNN_VERSION >= 7000
+#define CUDNN_DNN_ROUTINE_EACH_R7(__macro)                    \
+  __macro(cudnnSetConvolutionMathType)
+
+// clang-format on
+CUDNN_DNN_ROUTINE_EACH_R7(PERFTOOLS_GPUTOOLS_CUDNN_WRAP)
+#undef CUDNN_DNN_ROUTINE_EACH_R7
 #endif
 
 #undef CUDNN_DNN_ROUTINE_EACH
@@ -542,6 +554,29 @@ class ScopedFilterDescriptor {
   SE_DISALLOW_COPY_AND_ASSIGN(ScopedFilterDescriptor);
 };
 
+// A helper class to decide whether to enable the TENSOR_OP_MATH math type
+template <bool DefaultFlag>
+class TensorOpMath {
+ public:
+  static bool IsEnabled() {
+    static bool is_enabled = IsEnabledImpl();
+    return is_enabled;
+  }
+
+ private:
+  static bool IsEnabledImpl() {
+    const char* tf_env_var_val = getenv("TF_ENABLE_TENSOR_OP_MATH");
+    if (tf_env_var_val != nullptr) {
+      port::StringPiece tf_env_var_val_str(tf_env_var_val);
+      if (tf_env_var_val_str == "0") {
+        return false;
+      }
+      return true;
+    }
+    return DefaultFlag;
+  }
+};
+
 // Turns a ConvolutionDescriptor structure into a cudnn convolution handle
 // within a scope.
 class ScopedConvolutionDescriptor {
@@ -584,6 +619,27 @@ class ScopedConvolutionDescriptor {
       LOG(FATAL) << "could not set cudnn convolution descriptor: "
                  << ToString(status);
     }
+    // NOTE(benbarsdell): This only applies if tensor op math is enabled
+    //                      and algo selection is set to kDefaultAlgorithm.
+    this->set_use_tensor_op_math(true);
+  }
+
+  void set_use_tensor_op_math(bool use_tensor_op_math) {
+#if CUDNN_VERSION >= 7000
+    cudnnMathType_t math_type =
+        (use_tensor_op_math ?
+         CUDNN_TENSOR_OP_MATH :
+         CUDNN_DEFAULT_MATH);
+    if (TensorOpMath<true>::IsEnabled()) {
+      cudnnStatus_t status =
+          wrap::cudnnSetConvolutionMathType(
+              parent_, handle_, math_type);
+      if (status != CUDNN_STATUS_SUCCESS) {
+        LOG(FATAL) << "could not set cudnn convolution math type: "
+                   << ToString(status);
+      }
+    }
+#endif
   }
 
   ~ScopedConvolutionDescriptor() {
@@ -1014,11 +1070,21 @@ class CudnnRnnDescriptor : public CudnnDescriptorCommon<dnn::RnnDescriptor> {
     // Create the RNN handle
     cudnnStatus_t status = wrap::cudnnCreateRNNDescriptor(parent_, &rnn_desc_);
     CUDNN_RETURN_IF_FAIL(status, "Unable to create RNN descriptor");
+    #if CUDNN_VERSION >= 6000
+    cudnnRNNAlgo_t rnn_algo = CUDNN_RNN_ALGO_STANDARD;
+    status = wrap::cudnnSetRNNDescriptor_v6(
+        parent, cudnn_handle,
+        rnn_desc_ /*rnnDesc*/, hidden_size /*hiddenSize*/,
+        num_layers /*numLayers*/, dropout_handle() /*dropoutDesc*/,
+        input_mode /*inputMode*/, direction_mode /*direction*/,
+        rnn_mode /*mode*/, rnn_algo /*algo*/, data_type /*dataType*/);
+    #else
     status = wrap::cudnnSetRNNDescriptor(
         parent, rnn_desc_ /*rnnDesc*/, hidden_size /*hiddenSize*/,
         num_layers /*numLayers*/, dropout_handle() /*dropoutDesc*/,
         input_mode /*inputMode*/, direction_mode /*direction*/,
         rnn_mode /*mode*/, data_type /*dataType*/);
+    #endif
     CUDNN_RETURN_IF_FAIL(status, "Unable to update RNN descriptor");
 
     // Create the params handle.
@@ -1916,6 +1982,8 @@ bool CudnnSupport::DoConvolveImpl(
   } else {
     // An algorithm has been specified.
     algo = ToConvForwardAlgo(algorithm_config.algorithm());
+    conv.set_use_tensor_op_math(algorithm_config.use_tensor_op_math());
+
     size_t size_in_bytes;
     status = wrap::cudnnGetConvolutionForwardWorkspaceSize(
         parent_, ToHandle(dnn_handle_), /*srcDesc=*/input_nd.handle(),
@@ -1949,6 +2017,8 @@ bool CudnnSupport::DoConvolveImpl(
             << "The primary convolution algorithm failed memory allocation, "
                "while a secondary algorithm is not provided.";
         algo = ToConvForwardAlgo(algorithm_config.algorithm_no_scratch());
+        conv.set_use_tensor_op_math(
+            algorithm_config.use_tensor_op_math_no_scratch());
       }
     }
   }
@@ -2033,6 +2103,8 @@ bool CudnnSupport::DoConvolveImpl(
     if (status == CUDNN_STATUS_SUCCESS) {
       output_profile_result->set_is_valid(true);
       output_profile_result->set_algorithm(algo);
+      output_profile_result->set_use_tensor_op_math(
+          algorithm_config.use_tensor_op_math());
       output_profile_result->set_elapsed_time_in_ms(
           timer->GetElapsedMilliseconds());
     }
@@ -2164,24 +2236,43 @@ bool CudnnSupport::DoBatchNormalizationForward(
     DeviceMemory<float>* saved_inv_var, bool is_training,
     std::function<const DeviceMemory<float>&()> var_to_inv_var,
     std::function<void()> inv_var_to_var) {
-  return DoBatchNormalizationForwardImpl<float>(
+  return DoBatchNormalizationForwardImpl<float, float>(
       stream, dnn::DataType::kFloat, x, scale, offset, estimated_mean,
       estimated_variance, x_desc, scale_offset_desc, epsilon, y, batch_mean,
       batch_var, saved_mean, saved_inv_var, is_training,
       std::move(var_to_inv_var), std::move(inv_var_to_var));
 }
 
-template <class T>
-bool CudnnSupport::DoBatchNormalizationForwardImpl(
-    Stream* stream, dnn::DataType data_type, const DeviceMemory<T>& x,
-    const DeviceMemory<T>& scale, const DeviceMemory<T>& offset,
-    const DeviceMemory<T>& estimated_mean,
-    const DeviceMemory<T>& estimated_variance,
+bool CudnnSupport::DoBatchNormalizationForward(
+    Stream* stream, const DeviceMemory<Eigen::half>& x,
+    const DeviceMemory<float>& scale, const DeviceMemory<float>& offset,
+    const DeviceMemory<float>& estimated_mean,
+    const DeviceMemory<float>& estimated_variance,
     const dnn::BatchDescriptor& x_desc,
     const dnn::BatchDescriptor& scale_offset_desc, const double epsilon,
-    DeviceMemory<T>* y, DeviceMemory<T>* batch_mean, DeviceMemory<T>* batch_var,
-    DeviceMemory<T>* saved_mean, DeviceMemory<T>* saved_inv_var,
-    bool is_training, std::function<const DeviceMemory<T>&()> var_to_inv_var,
+    DeviceMemory<Eigen::half>* y, DeviceMemory<float>* batch_mean,
+    DeviceMemory<float>* batch_var, DeviceMemory<float>* saved_mean,
+    DeviceMemory<float>* saved_inv_var, bool is_training,
+    std::function<const DeviceMemory<float>&()> var_to_inv_var,
+    std::function<void()> inv_var_to_var) {
+  return DoBatchNormalizationForwardImpl<Eigen::half, float>(
+      stream, dnn::DataType::kHalf, x, scale, offset, estimated_mean,
+      estimated_variance, x_desc, scale_offset_desc, epsilon, y, batch_mean,
+      batch_var, saved_mean, saved_inv_var, is_training,
+      std::move(var_to_inv_var), std::move(inv_var_to_var));
+}
+
+template <class T, class U>
+bool CudnnSupport::DoBatchNormalizationForwardImpl(
+    Stream* stream, dnn::DataType data_type, const DeviceMemory<T>& x,
+    const DeviceMemory<U>& scale, const DeviceMemory<U>& offset,
+    const DeviceMemory<U>& estimated_mean,
+    const DeviceMemory<U>& estimated_variance,
+    const dnn::BatchDescriptor& x_desc,
+    const dnn::BatchDescriptor& scale_offset_desc, const double epsilon,
+    DeviceMemory<T>* y, DeviceMemory<U>* batch_mean, DeviceMemory<U>* batch_var,
+    DeviceMemory<U>* saved_mean, DeviceMemory<U>* saved_inv_var,
+    bool is_training, std::function<const DeviceMemory<U>&()> var_to_inv_var,
     std::function<void()> inv_var_to_var) {
   mutex_lock lock{dnn_handle_mutex_};
   auto status = wrap::cudnnSetStream(parent_, ToHandle(dnn_handle_),
@@ -2191,10 +2282,14 @@ bool CudnnSupport::DoBatchNormalizationForwardImpl(
     return false;
   }
 
-  ScopedTensorDescriptor x_descriptor{parent_, x_desc,
-                                      ToCudnnDataType(data_type)};
+  cudnnDataType_t cudnn_type = ToCudnnDataType(data_type);
+  ScopedTensorDescriptor x_descriptor{parent_, x_desc, cudnn_type};
+  // NOTE(benbarsdell): For fp16 input, CUDNN batchnorm uses mixed precision
+  // where the scale, offset, mean and variance are all stored in fp32.
+  cudnnDataType_t scale_offset_cudnn_type =
+    (cudnn_type == CUDNN_DATA_HALF) ? CUDNN_DATA_FLOAT : cudnn_type;
   ScopedTensorDescriptor scale_offset_descriptor{parent_, scale_offset_desc,
-                                                 ToCudnnDataType(data_type)};
+                                                 scale_offset_cudnn_type};
   cudnnBatchNormMode_t mode = CUDNN_BATCHNORM_SPATIAL;
   float one = 1.0;
   float zero = 0.0;
@@ -2246,15 +2341,28 @@ bool CudnnSupport::DoBatchNormalizationBackward(
       scale_offset_desc, epsilon, x_backprop, scale_backprop, offset_backprop);
 }
 
-template <class T>
-bool CudnnSupport::DoBatchNormalizationBackwardImpl(
-    Stream* stream, int cudnn_type, const DeviceMemory<T>& y_backprop,
-    const DeviceMemory<T>& x, const DeviceMemory<T>& scale,
-    const DeviceMemory<T>& mean, const DeviceMemory<T>& variance,
+bool CudnnSupport::DoBatchNormalizationBackward(
+    Stream* stream, const DeviceMemory<Eigen::half>& y_backprop,
+    const DeviceMemory<Eigen::half>& x, const DeviceMemory<float>& scale,
+    const DeviceMemory<float>& mean, const DeviceMemory<float>& variance,
     const dnn::BatchDescriptor& x_desc,
     const dnn::BatchDescriptor& scale_offset_desc, const double epsilon,
-    DeviceMemory<T>* x_backprop, DeviceMemory<T>* scale_backprop,
-    DeviceMemory<T>* offset_backprop) {
+    DeviceMemory<Eigen::half>* x_backprop, DeviceMemory<float>* scale_backprop,
+    DeviceMemory<float>* offset_backprop) {
+  return DoBatchNormalizationBackwardImpl(
+      stream, CUDNN_DATA_HALF, y_backprop, x, scale, mean, variance, x_desc,
+      scale_offset_desc, epsilon, x_backprop, scale_backprop, offset_backprop);
+}
+
+template <class T, class U>
+bool CudnnSupport::DoBatchNormalizationBackwardImpl(
+    Stream* stream, int cudnn_type, const DeviceMemory<T>& y_backprop,
+    const DeviceMemory<T>& x, const DeviceMemory<U>& scale,
+    const DeviceMemory<U>& mean, const DeviceMemory<U>& variance,
+    const dnn::BatchDescriptor& x_desc,
+    const dnn::BatchDescriptor& scale_offset_desc, const double epsilon,
+    DeviceMemory<T>* x_backprop, DeviceMemory<U>* scale_backprop,
+    DeviceMemory<U>* offset_backprop) {
   mutex_lock lock{dnn_handle_mutex_};
   auto status = wrap::cudnnSetStream(parent_, ToHandle(dnn_handle_),
                                      AsCUDAStreamValue(stream));
@@ -2265,8 +2373,14 @@ bool CudnnSupport::DoBatchNormalizationBackwardImpl(
 
   ScopedTensorDescriptor x_descriptor{parent_, x_desc,
                                       static_cast<cudnnDataType_t>(cudnn_type)};
+  // NOTE(benbarsdell): For fp16 input, CUDNN batchnorm uses mixed precision
+  // where the scale, offset, mean and variance are all stored in fp32.
+  cudnnDataType_t scale_offset_cudnn_type =
+    (cudnn_type == CUDNN_DATA_HALF) ?
+    CUDNN_DATA_FLOAT :
+    static_cast<cudnnDataType_t>(cudnn_type);
   ScopedTensorDescriptor scale_offset_descriptor{
-      parent_, scale_offset_desc, static_cast<cudnnDataType_t>(cudnn_type)};
+    parent_, scale_offset_desc, scale_offset_cudnn_type};
   cudnnBatchNormMode_t mode = CUDNN_BATCHNORM_SPATIAL;
   float one = 1.0;
   float zero = 0.0;
@@ -2558,6 +2672,7 @@ bool CudnnSupport::DoConvolveBackwardDataImpl(
   } else {
     // An algorithm has been specified.
     algo = ToConvBackwardDataAlgo(algorithm_config.algorithm());
+    conv.set_use_tensor_op_math(algorithm_config.use_tensor_op_math());
     size_t size_in_bytes;
     status = wrap::cudnnGetConvolutionBackwardDataWorkspaceSize(
         parent_, ToHandle(dnn_handle_),
@@ -2594,6 +2709,8 @@ bool CudnnSupport::DoConvolveBackwardDataImpl(
             << "The primary convolution algorithm failed memory allocation, "
                "while a secondary algorithm is not provided.";
         algo = ToConvBackwardDataAlgo(algorithm_config.algorithm_no_scratch());
+        conv.set_use_tensor_op_math(
+            algorithm_config.use_tensor_op_math_no_scratch());
       }
     }
   }
@@ -2631,6 +2748,8 @@ bool CudnnSupport::DoConvolveBackwardDataImpl(
     if (status == CUDNN_STATUS_SUCCESS) {
       output_profile_result->set_is_valid(true);
       output_profile_result->set_algorithm(algo);
+      output_profile_result->set_use_tensor_op_math(
+          algorithm_config.use_tensor_op_math());
       output_profile_result->set_elapsed_time_in_ms(
           timer->GetElapsedMilliseconds());
     }
@@ -2795,6 +2914,7 @@ bool CudnnSupport::DoConvolveBackwardFilterImpl(
   } else {
     // An algorithm has been specified.
     algo = ToConvBackwardFilterAlgo(algorithm_config.algorithm());
+    conv.set_use_tensor_op_math(algorithm_config.use_tensor_op_math());
 
     size_t size_in_bytes;
     status = wrap::cudnnGetConvolutionBackwardFilterWorkspaceSize(
@@ -2830,6 +2950,8 @@ bool CudnnSupport::DoConvolveBackwardFilterImpl(
                "while a secondary algorithm is not provided.";
         algo =
             ToConvBackwardFilterAlgo(algorithm_config.algorithm_no_scratch());
+        conv.set_use_tensor_op_math(
+            algorithm_config.use_tensor_op_math_no_scratch());
       }
     }
   }
@@ -2866,6 +2988,8 @@ bool CudnnSupport::DoConvolveBackwardFilterImpl(
     if (status == CUDNN_STATUS_SUCCESS) {
       output_profile_result->set_is_valid(true);
       output_profile_result->set_algorithm(algo);
+      output_profile_result->set_use_tensor_op_math(
+          algorithm_config.use_tensor_op_math());
       output_profile_result->set_elapsed_time_in_ms(
           timer->GetElapsedMilliseconds());
     }

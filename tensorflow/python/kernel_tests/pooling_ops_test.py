@@ -1107,11 +1107,8 @@ class PoolingTest(test.TestCase):
       return
 
     # Test the GPU implementation that uses cudnn for now.
-    # It does not propagate the diff in cases of NaNs
-    expected_input_backprop_cudnn = [
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0
-    ]
+    # It also propagates the diff in cases of NaNs
+    expected_input_backprop_cudnn = expected_input_backprop_tf_cpu
     self._testMaxPoolGradDirect(
         input_data,
         output_backprop,
@@ -1153,11 +1150,8 @@ class PoolingTest(test.TestCase):
       return
 
     # Test the GPU implementation that uses cudnn for now.
-    # It does not propagate the diff in cases of NaNs
-    expected_input_backprop_cudnn = [
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0
-    ]
+    # It also propagates the diff in cases of NaNs
+    expected_input_backprop_cudnn = expected_input_backprop_tf_cpu
     self._testMaxPoolGradDirect(
         input_data,
         output_backprop,

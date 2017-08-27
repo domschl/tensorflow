@@ -102,6 +102,10 @@ https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/util/cuda_k
 
 */
 
+#if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 9
+__device__ inline void __syncwarp(unsigned mask=0xFFFFFFFF) {}
+#endif
+
 #define CUDA_1D_KERNEL_LOOP(i, n)                            \
   for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; \
        i += blockDim.x * gridDim.x)
@@ -606,7 +610,11 @@ EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE T tf_max(const T& x, const T& y) {
 template <typename T>
 __device__ EIGEN_ALWAYS_INLINE T CudaShuffle(T value, int srcLane,
                                              int width = warpSize) {
-  return __shfl(value, srcLane, width);
+  #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 9
+    return __shfl(value, srcLane, width);
+  #else
+    return __shfl_sync(0xffffffff, value, srcLane, width);
+  #endif
 }
 
 // Variant of the (undocumented) version from the CUDA SDK, but using unsigned
@@ -617,8 +625,13 @@ __device__ EIGEN_ALWAYS_INLINE double CudaShuffle(double value, int srcLane,
                                                   int width = warpSize) {
   unsigned lo, hi;
   asm volatile("mov.b64 {%0,%1}, %2;" : "=r"(lo), "=r"(hi) : "d"(value));
-  hi = __shfl(hi, srcLane, width);
-  lo = __shfl(lo, srcLane, width);
+  #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 9
+    hi = __shfl(hi, srcLane, width);
+    lo = __shfl(lo, srcLane, width);
+  #else
+    hi = __shfl_sync(0xffffffff, hi, srcLane, width);
+    lo = __shfl_sync(0xffffffff, lo, srcLane, width);
+  #endif
   asm volatile("mov.b64 %0, {%1,%2};" : "=d"(value) : "r"(lo), "r"(hi));
   return value;
 }
@@ -626,7 +639,11 @@ __device__ EIGEN_ALWAYS_INLINE double CudaShuffle(double value, int srcLane,
 template <typename T>
 __device__ EIGEN_ALWAYS_INLINE T CudaShuffleUp(T value, int delta,
                                                int width = warpSize) {
-  return __shfl_up(value, delta, width);
+  #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 9
+    return __shfl_up(value, delta, width);
+  #else
+    return __shfl_up_sync(0xffffffff, value, delta, width);
+  #endif
 }
 
 // Variant of the (undocumented) version from the CUDA SDK, but using unsigned
@@ -637,8 +654,13 @@ __device__ EIGEN_ALWAYS_INLINE double CudaShuffleUp(double value, int delta,
                                                     int width = warpSize) {
   unsigned lo, hi;
   asm volatile("mov.b64 {%0,%1}, %2;" : "=r"(lo), "=r"(hi) : "d"(value));
-  hi = __shfl_up(hi, delta, width);
-  lo = __shfl_up(lo, delta, width);
+  #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 9
+    hi = __shfl_up(hi, delta, width);
+    lo = __shfl_up(lo, delta, width);
+  #else
+    hi = __shfl_up_sync(0xffffffff, hi, delta, width);
+    lo = __shfl_up_sync(0xffffffff, lo, delta, width);
+  #endif
   asm volatile("mov.b64 %0, {%1,%2};" : "=d"(value) : "r"(lo), "r"(hi));
   return value;
 }
@@ -646,7 +668,11 @@ __device__ EIGEN_ALWAYS_INLINE double CudaShuffleUp(double value, int delta,
 template <typename T>
 __device__ EIGEN_ALWAYS_INLINE T CudaShuffleDown(T value, int delta,
                                                  int width = warpSize) {
-  return __shfl_down(value, delta, width);
+  #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 9
+    return __shfl_down(value, delta, width);
+  #else
+    return __shfl_down_sync(0xffffffff, value, delta, width);
+  #endif
 }
 
 // Variant of the (undocumented) version from the CUDA SDK, but using unsigned
@@ -657,8 +683,13 @@ __device__ EIGEN_ALWAYS_INLINE double CudaShuffleDown(double value, int delta,
                                                       int width = warpSize) {
   unsigned lo, hi;
   asm volatile("mov.b64 {%0,%1}, %2;" : "=r"(lo), "=r"(hi) : "d"(value));
-  hi = __shfl_down(hi, delta, width);
-  lo = __shfl_down(lo, delta, width);
+  #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 9
+    hi = __shfl_down(hi, delta, width);
+    lo = __shfl_down(lo, delta, width);
+  #else
+    hi = __shfl_down_sync(0xffffffff, hi, delta, width);
+    lo = __shfl_down_sync(0xffffffff, lo, delta, width);
+  #endif
   asm volatile("mov.b64 %0, {%1,%2};" : "=d"(value) : "r"(lo), "r"(hi));
   return value;
 }
@@ -677,8 +708,13 @@ __device__ EIGEN_ALWAYS_INLINE double CudaShuffleXor(double value, int laneMask,
                                                      int width = warpSize) {
   unsigned lo, hi;
   asm volatile("mov.b64 {%0,%1}, %2;" : "=r"(lo), "=r"(hi) : "d"(value));
-  hi = __shfl_xor(hi, laneMask, width);
-  lo = __shfl_xor(lo, laneMask, width);
+  #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ < 9
+    hi = __shfl_xor(hi, laneMask, width);
+    lo = __shfl_xor(lo, laneMask, width);
+  #else
+    hi = __shfl_xor_sync(0xffffffff, hi, laneMask, width);
+    lo = __shfl_xor_sync(0xffffffff, lo, laneMask, width);
+  #endif
   asm volatile("mov.b64 %0, {%1,%2};" : "=d"(value) : "r"(lo), "r"(hi));
   return value;
 }
