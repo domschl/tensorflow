@@ -590,11 +590,11 @@ def tf_workspace(path_prefix="", tf_repo_name=""):
   temp_workaround_http_archive(
       name = "nccl_archive",
       urls = [
-          "http://mirror.bazel.build/github.com/nvidia/nccl/archive/ccfc4567dc3e2a37fb42cfbc64d10eb526e7da7b.tar.gz",
-          "https://github.com/nvidia/nccl/archive/ccfc4567dc3e2a37fb42cfbc64d10eb526e7da7b.tar.gz",
+          "http://mirror.bazel.build/github.com/nvidia/nccl/archive/29a1a916dc14bb2c00feed3d4820d51fa85be1e6.tar.gz",
+          "https://github.com/nvidia/nccl/archive/29a1a916dc14bb2c00feed3d4820d51fa85be1e6.tar.gz",
       ],
-      sha256 = "6c34a0862d9f8ed4ad5984c6a8206b351957bb14cf6ad7822720f285f4aada04",
-      strip_prefix = "nccl-ccfc4567dc3e2a37fb42cfbc64d10eb526e7da7b",
+      sha256 = "6387030e37d14762f87eefbc86ee527293ec04745c66ccd820cf7fc0fdc23f92",
+      strip_prefix = "nccl-29a1a916dc14bb2c00feed3d4820d51fa85be1e6",
       build_file = str(Label("//third_party:nccl.BUILD")),
       repository = tf_repo_name,
   )
@@ -650,10 +650,11 @@ def tf_workspace(path_prefix="", tf_repo_name=""):
   native.new_http_archive(
       name = "cub_archive",
       urls = [
-          "http://mirror.bazel.build/github.com/NVlabs/cub/archive/1.6.4.zip",
+          "http://mirror.bazel.build/github.com/NVlabs/cub/archive/f3937a96fdec78a73446aaaa114c112ff31f5503.tar.gz",
+          "https://github.com/NVlabs/cub/archive/f3937a96fdec78a73446aaaa114c112ff31f5503.tar.gz",
       ],
-      sha256 = "966d0c4f41e2bdc81aebf9ccfbf0baffaac5a74f00b826b06f4dee79b2bb8cee",
-      strip_prefix = "cub-1.6.4",
+      sha256 = "0badd2c1e2b601c3dafd36c6df7d959a3932a9c4bf57f583d3f9740ad2af04d9",
+      strip_prefix = "cub-f3937a96fdec78a73446aaaa114c112ff31f5503",
       build_file = str(Label("//third_party:cub.BUILD")),
   )
 
